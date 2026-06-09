@@ -1,0 +1,22 @@
+/* Rin Publisher - Obsidian Plugin Styles */
+
+.rin-status-bar {
+	font-size: 12px;
+	padding: 0 6px;
+	cursor: default;
+	user-select: none;
+}
+
+/* Settings page description */
+.rin-publisher-desc {
+	color: var(--text-muted);
+	font-size: var(--font-small);
+	margin-bottom: 16px;
+}
+
+/* Test connection button area */
+.setting-item.rin-test-connection {
+	border-top: 1px solid var(--background-modifier-border);
+	margin-top: 12px;
+	padding-top: 16px;
+}

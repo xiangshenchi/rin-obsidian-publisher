@@ -1,0 +1,10 @@
+{
+	"id": "rin-publisher",
+	"name": "Rin Publisher",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "将 Obsidian 笔记一键推送到 Rin 博客的草稿箱或直接发布",
+	"author": "xiangshenchi",
+	"authorUrl": "https://github.com/xiangshenchi",
+	"isDesktopOnly": false
+}
