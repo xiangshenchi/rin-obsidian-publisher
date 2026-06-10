@@ -86,7 +86,7 @@ export function buildFeedPayload(
 					: undefined,
 		draft: true, // 默认推送到草稿箱
 		listed: frontmatter.listed !== false,
-		tags: tags.length > 0 ? tags : undefined,
+		tags, // 始终发送数组（空数组 [] 也比 undefined 安全，Rin 会遍历 tags）
 	};
 }
 
