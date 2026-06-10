@@ -211,10 +211,17 @@ export default class RinPublisherPlugin extends Plugin {
 		frontmatterId: number | undefined,
 		mode: "draft" | "publish" | "sync",
 	): Promise<void> {
+		// 更新已有文章时，不要碰 draft 状态，除非用户显式选了 publish
+		// 否则已发布的文章被 "推送为草稿" 又会变回草稿
+		const updatePayload = { ...payload };
+		if (mode !== "publish") {
+			delete updatePayload.draft;
+		}
+
 		// ---- 阶段 0: frontmatter 显式指定 id（最高优先级） ----
 		if (frontmatterId && frontmatterId > 0) {
 			try {
-				await this.apiClient.updateFeed(frontmatterId, payload);
+				await this.apiClient.updateFeed(frontmatterId, updatePayload);
 				await this.saveFeedMapping(filePath, frontmatterId);
 				const label = mode === "draft" ? " [草稿]" : mode === "publish" ? " [已发布]" : "";
 				new Notice(`✅ 已更新文章 #${frontmatterId}${label}`);
@@ -223,7 +230,6 @@ export default class RinPublisherPlugin extends Plugin {
 				const msg = err instanceof Error ? err.message : String(err);
 				if (/not found/i.test(msg) || /404/i.test(msg)) {
 					new Notice(`⚠️ 文章 #${frontmatterId} 不存在，尝试新建`);
-					// 不 return，继续往下走
 				} else {
 					throw err;
 				}
@@ -234,13 +240,12 @@ export default class RinPublisherPlugin extends Plugin {
 		const mappedId = this.getLocalFeedId(filePath);
 		if (mappedId !== null) {
 			try {
-				await this.apiClient.updateFeed(mappedId, payload);
+				await this.apiClient.updateFeed(mappedId, updatePayload);
 				const label = mode === "draft" ? " [草稿]" : mode === "publish" ? " [已发布]" : "";
 				new Notice(`✅ 已更新文章 #${mappedId}${label}`);
 				return;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				// 映射失效（文章在后台被删了）→ 清除映射，继续往下走
 				if (/not found/i.test(msg) || /404/i.test(msg)) {
 					console.warn(`Rin Publisher: feed #${mappedId} 映射已失效，移除并重建`);
 					delete this.settings.feedMap[filePath];
@@ -257,7 +262,7 @@ export default class RinPublisherPlugin extends Plugin {
 			const existing = await this.apiClient.getFeedByAlias(alias);
 			if (existing) {
 				await this.saveFeedMapping(filePath, existing.id);
-				await this.apiClient.updateFeed(existing.id, payload);
+				await this.apiClient.updateFeed(existing.id, updatePayload);
 				new Notice(`✅ 已更新文章 #${existing.id} (${alias})`);
 				return;
 			}
