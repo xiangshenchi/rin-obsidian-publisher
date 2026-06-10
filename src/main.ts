@@ -127,7 +127,7 @@ export default class RinPublisherPlugin extends Plugin {
 		try {
 			await this.ensureAuthenticated();
 
-			// ---- 方式1: alias 精确匹配 ----
+			// ---- 有 alias → 匹配更新；无 alias → 直接新建 ----
 			const alias = payload.alias;
 			if (alias) {
 				const existing = await this.apiClient.getFeedByAlias(alias);
@@ -141,49 +141,7 @@ export default class RinPublisherPlugin extends Plugin {
 				}
 			}
 
-			// ---- 方式2: 标题匹配草稿（不阻塞，失败不影响新建） ----
-			try {
-				const drafts = await this.apiClient.listFeeds("draft");
-				if (drafts && drafts.length > 0) {
-					const matchByTitle = drafts.find(
-						(d) => d.title === payload.title,
-					);
-					if (matchByTitle) {
-						await this.apiClient.updateFeed(matchByTitle.id, payload);
-						new Notice(
-							`✅ 已更新草稿 #${matchByTitle.id}（标题匹配）${publishNow ? "[已发布]" : ""}`,
-						);
-						this.updateStatusBar();
-						return;
-					}
-				}
-			} catch (listErr) {
-				console.warn("Rin Publisher: listFeeds(draft) failed, proceeding:", listErr);
-			}
-
-			// ---- 方式2b: 发布模式下，也尝试按标题匹配已发布文章 ----
-			if (publishNow) {
-				try {
-					const allFeeds = await this.apiClient.listFeeds();
-					if (allFeeds && allFeeds.length > 0) {
-						const matchPublished = allFeeds.find(
-							(d) => d.title === payload.title && !d.draft,
-						);
-						if (matchPublished) {
-							await this.apiClient.updateFeed(matchPublished.id, payload);
-							new Notice(
-								`✅ 已更新已发布文章 #${matchPublished.id}（标题匹配）`,
-							);
-							this.updateStatusBar();
-							return;
-						}
-					}
-				} catch (listErr) {
-					console.warn("Rin Publisher: listFeeds(all) failed, proceeding to create:", listErr);
-				}
-			}
-
-			// ---- 方式3: 无匹配 → 新建 ----
+			// ---- 无匹配 → 新建文章 ----
 			const insertedId = await this.apiClient.createFeed(payload);
 			new Notice(
 				`✅ 已${publishNow ? "发布" : "存入草稿箱"}，文章 ID: #${insertedId}`,
