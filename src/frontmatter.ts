@@ -117,11 +117,16 @@ function parseSimpleYaml(lines: string[]): Record<string, unknown> {
 		const key = kvMatch[1];
 		let valuePart = kvMatch[2].trim();
 
-		// 如果值是空或多行标记 → 暂存，等待下一行的 - items
-		if (!valuePart || valuePart === "|" || valuePart === ">") {
+		// 如果值是空 → 准备收集列表项（YAML 列表格式）
+		if (!valuePart) {
+			currentArray = [];
+			arrayKey = key;
+			continue;
+		}
+
+		// 多行标记（| >）→ 暂不支持，跳过
+		if (valuePart === "|" || valuePart === ">") {
 			result[key] = "";
-			currentArray = null;
-			arrayKey = null;
 			continue;
 		}
 
