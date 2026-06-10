@@ -83,7 +83,11 @@ export function buildFeedPayload(
 				? frontmatter.alias
 				: typeof frontmatter.slug === "string"
 					? frontmatter.slug
-					: undefined,
+					: typeof frontmatter.aliases === "string"
+						? frontmatter.aliases
+						: Array.isArray(frontmatter.aliases) && frontmatter.aliases.length > 0
+							? String(frontmatter.aliases[0])
+							: undefined,
 		draft: true, // 默认推送到草稿箱
 		listed: frontmatter.listed !== false,
 		tags, // 始终发送数组（空数组 [] 也比 undefined 安全，Rin 会遍历 tags）

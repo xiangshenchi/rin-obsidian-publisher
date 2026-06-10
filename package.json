@@ -1,6 +1,6 @@
 {
 	"name": "rin-obsidian-publisher",
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"description": "Obsidian plugin to push notes to Rin blog",
 	"main": "main.js",
 	"scripts": {
