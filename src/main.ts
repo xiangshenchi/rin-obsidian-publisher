@@ -268,6 +268,25 @@ export default class RinPublisherPlugin extends Plugin {
 			}
 		}
 
+		// ---- 阶段 2.5: 按标题搜索（兜底，防重复文章） ----
+		// 当没有 id、没有本地映射、没有 alias 时，尝试按标题找到已有文章
+		// 这解决了博客后台已存在的文章从 Obsidian 推送时被错误新建的问题
+		if (payload.title && payload.title !== "Untitled") {
+			try {
+				const results = await this.apiClient.searchFeeds(payload.title);
+				const titleMatch = results.find((f) => f.title === payload.title);
+				if (titleMatch) {
+					await this.saveFeedMapping(filePath, titleMatch.id);
+					await this.apiClient.updateFeed(titleMatch.id, updatePayload);
+					const label = mode === "draft" ? " [草稿]" : mode === "publish" ? " [已发布]" : "";
+					new Notice(`✅ 已更新文章 #${titleMatch.id} (${payload.title})${label}`);
+					return;
+				}
+			} catch (err) {
+				console.warn("Rin Publisher: 标题搜索失败，继续新建", err);
+			}
+		}
+
 		// ---- 阶段 3: 新建文章 ----
 		const insertedId = await this.createFeedWithRetry(filePath, payload, alias);
 		const label = mode === "publish" ? "发布" : mode === "draft" ? "存入草稿箱" : "新建";
