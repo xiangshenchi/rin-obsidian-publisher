@@ -36,7 +36,6 @@ export function parseFrontmatter(
 	// 检查是否以 --- 开头
 	const lines = content.split("\n");
 	if (lines.length < 2 || lines[0].trim() !== "---") {
-		// 没有 frontmatter
 		result.body = content;
 		return result;
 	}
@@ -51,7 +50,6 @@ export function parseFrontmatter(
 	}
 
 	if (endIndex === -1) {
-		// 没有 closing ---，当作没有 frontmatter
 		result.body = content;
 		return result;
 	}
@@ -61,7 +59,7 @@ export function parseFrontmatter(
 	result.hasFrontmatter = true;
 	result.rawFrontmatter = lines.slice(0, endIndex + 1).join("\n");
 
-	// 粗略解析 key: value 对（支持多行值用缩进，但不支持完整的 YAML）
+	// 粗略解析 key: value 对
 	result.frontmatter = parseSimpleYaml(fmLines);
 
 	// 提取正文
@@ -82,39 +80,34 @@ export function parseFrontmatter(
 
 /**
  * 简易 YAML 键值对解析
- * 支持: string, number, boolean, string[], number[], 嵌套数组
- * 不支持: 完整的 YAML 规范（对象嵌套、引用等）
+ * 支持: string, number, boolean, string[], number[]
+ * 不支持: 对象嵌套、完整 YAML 规范
  */
 function parseSimpleYaml(lines: string[]): Record<string, unknown> {
 	const result: Record<string, unknown> = {};
-	const stack: Array<{
-		key: string;
-		obj: Record<string, unknown>;
-		indent: number;
-	}> = [];
 	let currentArray: string[] | null = null;
 	let arrayKey: string | null = null;
 
 	for (const rawLine of lines) {
-		const line = rawLine;
-		const indent = line.search(/\S/);
-		const trimmed = line.trim();
+		const trimmed = rawLine.trim();
 
-		// 空行或注释
+		// 空行或注释行（以 # 开头）
 		if (!trimmed || trimmed.startsWith("#")) continue;
 
 		// 数组项: - value
 		const arrayItemMatch = trimmed.match(/^-\s+(.*)/);
 		if (arrayItemMatch) {
 			if (currentArray && arrayKey) {
-				currentArray.push(arrayItemMatch[1].trim());
+				currentArray.push(parseSimpleValue(stripYamlComment(arrayItemMatch[1].trim())));
 			}
 			continue;
 		}
 
-		// 如果之前在处理数组，flush
+		// flush 上一个数组
 		if (currentArray !== null && arrayKey) {
-			// 已经 flush 过了在下面
+			result[arrayKey] = currentArray;
+			currentArray = null;
+			arrayKey = null;
 		}
 
 		// key: value
@@ -122,12 +115,10 @@ function parseSimpleYaml(lines: string[]): Record<string, unknown> {
 		if (!kvMatch) continue;
 
 		const key = kvMatch[1];
-		const valuePart = kvMatch[2].trim();
+		let valuePart = kvMatch[2].trim();
 
-		// 如果是列表的开始（下一行是 - item），暂存
-		// 简单值
-		if (valuePart === "" || valuePart === "|" || valuePart === ">") {
-			// 可能是多行值或空值，存空字符串
+		// 如果值是空或多行标记 → 暂存，等待下一行的 - items
+		if (!valuePart || valuePart === "|" || valuePart === ">") {
 			result[key] = "";
 			currentArray = null;
 			arrayKey = null;
@@ -138,10 +129,8 @@ function parseSimpleYaml(lines: string[]): Record<string, unknown> {
 		const parsed = parseYamlValue(valuePart);
 
 		if (Array.isArray(parsed)) {
-			// inline array: [a, b, c]
 			result[key] = parsed;
 		} else if (parsed === "___ARRAY_START___") {
-			// 后面跟 - item 列表
 			currentArray = [];
 			arrayKey = key;
 		} else {
@@ -159,13 +148,24 @@ function parseSimpleYaml(lines: string[]): Record<string, unknown> {
 	return result;
 }
 
+function parseSimpleValue(val: string): string {
+	// 去掉可能的引号
+	if (
+		(val.startsWith('"') && val.endsWith('"')) ||
+		(val.startsWith("'") && val.endsWith("'"))
+	) {
+		return val.slice(1, -1);
+	}
+	return val;
+}
+
 function parseYamlValue(value: string): unknown {
-	const trimmed = value.trim();
+	let trimmed = value.trim();
 
 	// 空
 	if (!trimmed) return "";
 
-	// 引号字符串
+	// 引号字符串 — 先检查，引号内的 # 是内容不是注释
 	if (
 		(trimmed.startsWith('"') && trimmed.endsWith('"')) ||
 		(trimmed.startsWith("'") && trimmed.endsWith("'"))
@@ -173,12 +173,16 @@ function parseYamlValue(value: string): unknown {
 		return trimmed.slice(1, -1);
 	}
 
+	// 剥离 YAML 行内注释（非引号内的 # → 注释）
+	trimmed = stripYamlComment(trimmed);
+	if (!trimmed) return "";
+
 	// Boolean
 	if (trimmed === "true" || trimmed === "yes" || trimmed === "on") return true;
 	if (trimmed === "false" || trimmed === "no" || trimmed === "off") return false;
 
 	// null
-	if (trimmed === "null" || trimmed === "~" || trimmed === "") return null;
+	if (trimmed === "null" || trimmed === "~") return null;
 
 	// Number
 	const num = Number(trimmed);
@@ -193,20 +197,28 @@ function parseYamlValue(value: string): unknown {
 				const item = s.trim();
 				const itemNum = Number(item);
 				if (!isNaN(itemNum) && item !== "") return itemNum;
-				// 去掉可能的引号
-				if (
-					(item.startsWith('"') && item.endsWith('"')) ||
-					(item.startsWith("'") && item.endsWith("'"))
-				) {
-					return item.slice(1, -1);
-				}
-				return item;
+				return parseSimpleValue(item);
 			})
 			.filter((s) => s !== "");
 	}
 
-	// 列表标记（下一行是 - items）
+	// 下一行是 - items 的标记（空值在 YAML 中可能表示列表开始）
 	if (trimmed === "") return "___ARRAY_START___";
 
 	return trimmed;
+}
+
+/** 剥离 YAML 行内注释（从第一个非引号内的 # 到行尾） */
+function stripYamlComment(val: string): string {
+	let inSQ = false;
+	let inDQ = false;
+	for (let i = 0; i < val.length; i++) {
+		const ch = val[i];
+		if (ch === '"' && !inSQ) inDQ = !inDQ;
+		else if (ch === "'" && !inDQ) inSQ = !inSQ;
+		else if (ch === "#" && !inSQ && !inDQ) {
+			return val.substring(0, i).trimEnd();
+		}
+	}
+	return val.trimEnd();
 }

@@ -77,13 +77,13 @@ export function buildFeedPayload(
 				? frontmatter.summary
 				: typeof frontmatter.description === "string"
 					? frontmatter.description
-					: "",
+					: undefined,
 		alias:
 			typeof frontmatter.alias === "string"
 				? frontmatter.alias
 				: typeof frontmatter.slug === "string"
 					? frontmatter.slug
-					: "",
+					: undefined,
 		draft: true, // 默认推送到草稿箱
 		listed: frontmatter.listed !== false,
 		tags: tags.length > 0 ? tags : undefined,
@@ -96,16 +96,21 @@ function extractTitleFromBody(body: string): string | null {
 	return match ? match[1].trim() : null;
 }
 
-/** 从 frontmatter 提取标签 */
+/** 从 frontmatter 提取标签（去掉 # 前缀） */
 function extractTags(frontmatter: Record<string, unknown>): string[] {
 	const raw = frontmatter.tags ?? frontmatter.tag ?? [];
 	if (Array.isArray(raw)) {
-		return raw.map(String);
+		return raw.map(String).map(cleanTag).filter(Boolean);
 	}
 	if (typeof raw === "string") {
-		return raw.split(/[,，\s]+/).filter(Boolean);
+		return raw.split(/[,，\s]+/).map(cleanTag).filter(Boolean);
 	}
 	return [];
+}
+
+/** 去掉标签中的 # 前缀和首尾空白 */
+function cleanTag(tag: string): string {
+	return tag.trim().replace(/^#+/, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -162,19 +167,32 @@ export class RinApiClient {
 	 * POST /api/feed
 	 */
 	async createFeed(payload: FeedPayload): Promise<number> {
+		console.log("Rin API: createFeed payload", JSON.stringify(payload));
 		const res = await this.fetch("/api/feed", {
 			method: "POST",
 			headers: this.authHeaders(),
 			body: JSON.stringify(payload),
 		});
 
-		const data = (await res.json()) as CreateFeedResponse & ApiError;
+		const text = await res.text();
+		console.log(`Rin API: createFeed response ${res.status}`, text);
 
 		if (!res.ok) {
-			throw new Error(data.message || data.error || `Create failed (${res.status})`);
+			// 尝试解析为 JSON，不行就用原始文本
+			try {
+				const data = JSON.parse(text) as ApiError;
+				throw new Error(data.message || data.error || `Create failed (${res.status})`);
+			} catch {
+				throw new Error(text || `Create failed (${res.status})`);
+			}
 		}
 
-		return data.insertedId;
+		try {
+			const data = JSON.parse(text) as CreateFeedResponse;
+			return data.insertedId;
+		} catch {
+			throw new Error(`Create succeeded but response not JSON: ${text}`);
+		}
 	}
 
 	/**
@@ -182,6 +200,7 @@ export class RinApiClient {
 	 * POST /api/feed/:id
 	 */
 	async updateFeed(id: number, payload: Partial<FeedPayload>): Promise<void> {
+		console.log("Rin API: updateFeed", id, JSON.stringify(payload));
 		const res = await this.fetch(`/api/feed/${id}`, {
 			method: "POST",
 			headers: this.authHeaders(),
@@ -189,8 +208,14 @@ export class RinApiClient {
 		});
 
 		if (!res.ok) {
-			const data = (await res.json()) as ApiError;
-			throw new Error(data.message || data.error || `Update failed (${res.status})`);
+			const text = await res.text();
+			console.warn(`Rin API: updateFeed failed ${res.status}`, text);
+			try {
+				const data = JSON.parse(text) as ApiError;
+				throw new Error(data.message || data.error || `Update failed (${res.status})`);
+			} catch {
+				throw new Error(text || `Update failed (${res.status})`);
+			}
 		}
 	}
 
@@ -208,8 +233,9 @@ export class RinApiClient {
 		});
 
 		if (!res.ok) {
-			const data = (await res.json()) as ApiError;
-			throw new Error(data.message || data.error || `List feeds failed (${res.status})`);
+			const text = await res.text();
+			console.warn("Rin API: listFeeds failed", res.status, text);
+			throw new Error(text || `List feeds failed (${res.status})`);
 		}
 
 		const body = (await res.json()) as {
