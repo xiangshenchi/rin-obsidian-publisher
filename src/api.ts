@@ -269,6 +269,32 @@ export class RinApiClient {
 		return res.json() as Promise<Feed>;
 	}
 
+	/**
+	 * 搜索文章（按标题/内容/别名）
+	 * GET /api/search/:keyword
+	 *
+	 * Rin 的 search 端点返回匹配 title / content / summary / alias 的结果。
+	 * 已认证时返回草稿+已发布，未认证只返回已发布。
+	 */
+	async searchFeeds(keyword: string): Promise<Feed[]> {
+		const res = await this.fetch(`/api/search/${encodeURIComponent(keyword)}`, {
+			method: "GET",
+			headers: this.authHeaders(),
+		});
+
+		if (!res.ok) {
+			const data = (await res.json()) as ApiError;
+			throw new Error(data.message || data.error || `Search failed (${res.status})`);
+		}
+
+		const body = (await res.json()) as {
+			size: number;
+			data: Feed[];
+			hasNext: boolean;
+		};
+		return body.data ?? [];
+	}
+
 	// ---- 便捷方法 -----------------------------------------------------------
 
 	/**

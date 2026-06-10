@@ -119,34 +119,14 @@ export default class RinPublisherPlugin extends Plugin {
 		// 覆盖 draft 状态
 		payload.draft = !publishNow;
 
-		// 调试: 打出 payload，帮助排查 Issue 2 (listed 默认值)
+		// 调试: 打出 payload，帮助排查问题
 		console.log("Rin Publisher: push payload", JSON.stringify(payload));
 
 		new Notice(`⏳ 正在${publishNow ? "发布" : "推送草稿"}…`);
 
 		try {
 			await this.ensureAuthenticated();
-
-			// ---- 有 alias → 匹配更新；无 alias → 直接新建 ----
-			const alias = payload.alias;
-			if (alias) {
-				const existing = await this.apiClient.getFeedByAlias(alias);
-				if (existing) {
-					await this.apiClient.updateFeed(existing.id, payload);
-					new Notice(
-						`✅ 已更新文章 #${existing.id} (${alias})${publishNow ? " [已发布]" : " [草稿]"}`,
-					);
-					this.updateStatusBar();
-					return;
-				}
-			}
-
-			// ---- 无匹配 → 新建文章 ----
-			const insertedId = await this.apiClient.createFeed(payload);
-			new Notice(
-				`✅ 已${publishNow ? "发布" : "存入草稿箱"}，文章 ID: #${insertedId}`,
-			);
-
+			await this.pushOrSync(file.path, payload, publishNow ? "publish" : "draft");
 			this.updateStatusBar();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -158,7 +138,7 @@ export default class RinPublisherPlugin extends Plugin {
 	}
 
 	/**
-	 * 同步模式：用 frontmatter 中的 alias/slug 去匹配
+	 * 同步模式：用本地映射 + alias 去匹配
 	 * 有则更新，无则新建
 	 */
 	async syncArticle() {
@@ -179,34 +159,118 @@ export default class RinPublisherPlugin extends Plugin {
 
 		const { frontmatter, body } = parseFrontmatter(rawContent, this.settings.includeFrontmatter);
 		const payload = buildFeedPayload(frontmatter, body);
-		const alias = payload.alias;
 
-		if (!alias) {
+		if (!payload.alias) {
 			new Notice("⚠️ 请在 frontmatter 中设置 alias 或 slug 才能使用同步功能");
 			return;
 		}
 
-		new Notice(`⏳ 正在同步 (${alias})…`);
+		new Notice(`⏳ 正在同步 (${payload.alias})…`);
 
 		try {
 			await this.ensureAuthenticated();
-
-			const existing = await this.apiClient.getFeedByAlias(alias);
-
-			if (existing) {
-				await this.apiClient.updateFeed(existing.id, payload);
-				new Notice(`✅ 已更新文章 #${existing.id} (${alias})`);
-			} else {
-				const id = await this.apiClient.createFeed(payload);
-				new Notice(`✅ 已新建文章 #${id} (${alias})`);
-			}
-
+			await this.pushOrSync(file.path, payload, "sync");
 			this.updateStatusBar();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			const type = err instanceof Error ? err.constructor.name : typeof err;
 			console.error("Rin Publisher sync error:", err);
 			new Notice(`❌ 同步失败 [${type}]: ${msg}`);
+		}
+	}
+
+	/**
+	 * 统一推送/同步逻辑（三阶段）：
+	 *   1. 本地映射 → 直接更新
+	 *   2. alias 匹配 → 更新 + 保存映射
+	 *   3. 都没有 → 新建 + 保存映射
+	 *
+	 * 这样即使服务端不存 alias（已知 chix.pp.ua 的 bug），
+	 * 同一文件第二次推送也能 100% 命中更新，零额外 API 调用。
+	 */
+	private async pushOrSync(
+		filePath: string,
+		payload: import("./api").FeedPayload,
+		mode: "draft" | "publish" | "sync",
+	): Promise<void> {
+		// ---- 阶段 1: 查本地映射（最快路径，无需网络） ----
+		const mappedId = this.getLocalFeedId(filePath);
+		if (mappedId !== null) {
+			try {
+				await this.apiClient.updateFeed(mappedId, payload);
+				const label = mode === "draft" ? " [草稿]" : mode === "publish" ? " [已发布]" : "";
+				new Notice(`✅ 已更新文章 #${mappedId}${label}`);
+				return;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				// 映射失效（文章在后台被删了）→ 清除映射，继续往下走
+				if (/not found/i.test(msg) || /404/i.test(msg)) {
+					console.warn(`Rin Publisher: feed #${mappedId} 映射已失效，移除并重建`);
+					delete this.settings.feedMap[filePath];
+					await this.saveSettings();
+				} else {
+					throw err; // 其他错误抛给上层
+				}
+			}
+		}
+
+		// ---- 阶段 2: alias 匹配（兜底，跨设备迁移时有用） ----
+		const alias = payload.alias;
+		if (alias) {
+			const existing = await this.apiClient.getFeedByAlias(alias);
+			if (existing) {
+				// 找到已有文章 → 保存映射 + 更新
+				await this.saveFeedMapping(filePath, existing.id);
+				await this.apiClient.updateFeed(existing.id, payload);
+				new Notice(`✅ 已更新文章 #${existing.id} (${alias})`);
+				return;
+			}
+		}
+
+		// ---- 阶段 3: 新建文章 ----
+		const insertedId = await this.createFeedWithRetry(filePath, payload, alias);
+		const label = mode === "publish" ? "发布" : mode === "draft" ? "存入草稿箱" : "新建";
+		new Notice(`✅ 已${label}，文章 ID: #${insertedId}${alias ? ` (${alias})` : ""}`);
+	}
+
+	/**
+	 * 创建新文章，遇到 "Content already exists" 时自动恢复：
+	 * 搜索已有文章 → 保存映射 → 更新内容
+	 *
+	 * 这解决了升级后首次推送的重复问题：v1.1.0 之前没有本地映射，
+	 * 服务端又没有存 alias，第一次推送会撞到服务端的重复检测。
+	 */
+	private async createFeedWithRetry(
+		filePath: string,
+		payload: import("./api").FeedPayload,
+		alias: string | undefined,
+	): Promise<number> {
+		try {
+			const id = await this.apiClient.createFeed(payload);
+			await this.saveFeedMapping(filePath, id);
+			return id;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (/content.*(already\s+exists|exist)/i.test(msg)) {
+				console.warn("Rin Publisher: 服务端返回重复，尝试按标题找回已有文章");
+				// 按标题搜索，找精确匹配
+				const results = await this.apiClient.searchFeeds(payload.title);
+				const match = results.find(
+					(f) => f.title === payload.title || f.content === payload.content,
+				);
+				if (match) {
+					await this.saveFeedMapping(filePath, match.id);
+					await this.apiClient.updateFeed(match.id, payload);
+					new Notice(`♻️ 检测到重复，已更新现有文章 #${match.id}`);
+					return match.id;
+				}
+				// 搜索也没找到 → 可能是标题变了，抛到上层
+				throw new Error(
+					`服务端返回"内容已存在"，但按标题搜索未找到匹配文章。` +
+					`请手动在 Rin 后台删除重复文章后重试，或为该笔记设置 alias。`,
+				);
+			}
+			throw err; // 其他错误原样抛
 		}
 	}
 
@@ -292,6 +356,21 @@ export default class RinPublisherPlugin extends Plugin {
 		// 缓存 token
 		this.settings.savedToken = token;
 		this.settings.tokenExpiresAt = Date.now() + 3600_000; // 假设 1h 有效
+		await this.saveSettings();
+	}
+
+	/**
+	 * 查本地映射：filePath → feedId
+	 * 纯本地，不消耗 API
+	 */
+	private getLocalFeedId(filePath: string): number | null {
+		const id = this.settings.feedMap[filePath];
+		return id && id > 0 ? id : null;
+	}
+
+	/** 保存 filePath → feedId 映射 */
+	private async saveFeedMapping(filePath: string, feedId: number) {
+		this.settings.feedMap[filePath] = feedId;
 		await this.saveSettings();
 	}
 

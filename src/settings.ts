@@ -32,6 +32,14 @@ export interface RinPublisherSettings {
 	 * false → 剥离 frontmatter，只发正文
 	 */
 	includeFrontmatter: boolean;
+	/**
+	 * 文件路径 → Feed ID 映射缓存
+	 * key: vault 内相对路径（如 folder/note.md）
+	 * value: Rin 文章 ID
+	 *
+	 * 首次推送后自动记录，后续推送直接按 ID 更新，无需网络匹配
+	 */
+	feedMap: Record<string, number>;
 }
 
 export const DEFAULT_SETTINGS: RinPublisherSettings = {
@@ -42,6 +50,7 @@ export const DEFAULT_SETTINGS: RinPublisherSettings = {
 	tokenExpiresAt: 0,
 	defaultMode: "draft",
 	includeFrontmatter: false,
+	feedMap: {},
 };
 
 // ---------------------------------------------------------------------------
