@@ -14,6 +14,17 @@ import { parseFrontmatter } from "./frontmatter";
 // Obsidian 支持的 SVG 图标，用于 ribbon 按钮
 const RIBBON_ICON = "upload";
 
+/** 从 frontmatter 中提取 id（数字），支持 `id: 8` 和 `id: "8"` 两种写法 */
+function parseFrontmatterId(frontmatter: Record<string, unknown>): number | undefined {
+	const val = frontmatter.id;
+	if (typeof val === "number" && val > 0 && Number.isInteger(val)) return val;
+	if (typeof val === "string") {
+		const n = parseInt(val, 10);
+		if (!isNaN(n) && n > 0) return n;
+	}
+	return undefined;
+}
+
 export default class RinPublisherPlugin extends Plugin {
 	settings!: RinPublisherSettings;
 	apiClient!: RinApiClient;
@@ -119,14 +130,16 @@ export default class RinPublisherPlugin extends Plugin {
 		// 覆盖 draft 状态
 		payload.draft = !publishNow;
 
-		// 调试: 打出 payload，帮助排查问题
-		console.log("Rin Publisher: push payload", JSON.stringify(payload));
+		// 提取可选的 id（用于精确指定要更新的文章）
+		const frontmatterId = parseFrontmatterId(frontmatter);
+
+		console.log("Rin Publisher: push payload", JSON.stringify(payload), "frontmatterId:", frontmatterId);
 
 		new Notice(`⏳ 正在${publishNow ? "发布" : "推送草稿"}…`);
 
 		try {
 			await this.ensureAuthenticated();
-			await this.pushOrSync(file.path, payload, publishNow ? "publish" : "draft");
+			await this.pushOrSync(file.path, payload, frontmatterId, publishNow ? "publish" : "draft");
 			this.updateStatusBar();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -138,7 +151,7 @@ export default class RinPublisherPlugin extends Plugin {
 	}
 
 	/**
-	 * 同步模式：用本地映射 + alias 去匹配
+	 * 同步模式：用 frontmatter id / 本地映射 / alias 去匹配
 	 * 有则更新，无则新建
 	 */
 	async syncArticle() {
@@ -160,16 +173,18 @@ export default class RinPublisherPlugin extends Plugin {
 		const { frontmatter, body } = parseFrontmatter(rawContent, this.settings.includeFrontmatter);
 		const payload = buildFeedPayload(frontmatter, body);
 
-		if (!payload.alias) {
-			new Notice("⚠️ 请在 frontmatter 中设置 alias 或 slug 才能使用同步功能");
+		// 提取 id，如果没有 id 也没有 alias 才报错
+		const frontmatterId = parseFrontmatterId(frontmatter);
+		if (!frontmatterId && !payload.alias) {
+			new Notice("⚠️ 请在 frontmatter 中设置 id 或 alias 才能使用同步功能");
 			return;
 		}
 
-		new Notice(`⏳ 正在同步 (${payload.alias})…`);
+		new Notice(`⏳ 正在同步${frontmatterId ? ` (id=${frontmatterId})` : payload.alias ? ` (${payload.alias})` : ""}…`);
 
 		try {
 			await this.ensureAuthenticated();
-			await this.pushOrSync(file.path, payload, "sync");
+			await this.pushOrSync(file.path, payload, frontmatterId, "sync");
 			this.updateStatusBar();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -180,19 +195,41 @@ export default class RinPublisherPlugin extends Plugin {
 	}
 
 	/**
-	 * 统一推送/同步逻辑（三阶段）：
-	 *   1. 本地映射 → 直接更新
+	 * 统一推送/同步逻辑（四阶段）：
+	 *   0. frontmatter 显式 id → 更新 + 保存映射
+	 *   1. 本地路径映射 → 更新（最快，零网络）
 	 *   2. alias 匹配 → 更新 + 保存映射
 	 *   3. 都没有 → 新建 + 保存映射
 	 *
-	 * 这样即使服务端不存 alias（已知 chix.pp.ua 的 bug），
-	 * 同一文件第二次推送也能 100% 命中更新，零额外 API 调用。
+	 * frontmatter 的 id 优先级最高，因为它是用户手动指定的唯一不变量。
+	 * 本地映射次之（第二次推同一文件时 100% 命中）。
+	 * alias 作为跨设备兜底。
 	 */
 	private async pushOrSync(
 		filePath: string,
 		payload: import("./api").FeedPayload,
+		frontmatterId: number | undefined,
 		mode: "draft" | "publish" | "sync",
 	): Promise<void> {
+		// ---- 阶段 0: frontmatter 显式指定 id（最高优先级） ----
+		if (frontmatterId && frontmatterId > 0) {
+			try {
+				await this.apiClient.updateFeed(frontmatterId, payload);
+				await this.saveFeedMapping(filePath, frontmatterId);
+				const label = mode === "draft" ? " [草稿]" : mode === "publish" ? " [已发布]" : "";
+				new Notice(`✅ 已更新文章 #${frontmatterId}${label}`);
+				return;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				if (/not found/i.test(msg) || /404/i.test(msg)) {
+					new Notice(`⚠️ 文章 #${frontmatterId} 不存在，尝试新建`);
+					// 不 return，继续往下走
+				} else {
+					throw err;
+				}
+			}
+		}
+
 		// ---- 阶段 1: 查本地映射（最快路径，无需网络） ----
 		const mappedId = this.getLocalFeedId(filePath);
 		if (mappedId !== null) {
@@ -209,7 +246,7 @@ export default class RinPublisherPlugin extends Plugin {
 					delete this.settings.feedMap[filePath];
 					await this.saveSettings();
 				} else {
-					throw err; // 其他错误抛给上层
+					throw err;
 				}
 			}
 		}
@@ -219,7 +256,6 @@ export default class RinPublisherPlugin extends Plugin {
 		if (alias) {
 			const existing = await this.apiClient.getFeedByAlias(alias);
 			if (existing) {
-				// 找到已有文章 → 保存映射 + 更新
 				await this.saveFeedMapping(filePath, existing.id);
 				await this.apiClient.updateFeed(existing.id, payload);
 				new Notice(`✅ 已更新文章 #${existing.id} (${alias})`);
