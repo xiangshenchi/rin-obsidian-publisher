@@ -295,6 +295,26 @@ export class RinApiClient {
 		return body.data ?? [];
 	}
 
+	// ---- Cache ---------------------------------------------------------------
+
+	/**
+	 * 清除服务端 localStorage 缓存
+	 * DELETE /api/config/cache
+	 *
+	 * 在 Obsidian 端推送/更新文章后调用，确保 Rin 编辑器页能从服务端
+	 * 拉取到最新数据，而不是被过期的 localStorage 覆盖。
+	 */
+	async clearServerCache(): Promise<void> {
+		try {
+			await this.fetch("/api/config/cache", {
+				method: "DELETE",
+				headers: this.authHeaders(),
+			});
+		} catch (err) {
+			console.warn("Rin API: clearServerCache failed (non-fatal)", err);
+		}
+	}
+
 	// ---- 便捷方法 -----------------------------------------------------------
 
 	/**

@@ -223,6 +223,7 @@ export default class RinPublisherPlugin extends Plugin {
 			try {
 				await this.apiClient.updateFeed(frontmatterId, updatePayload);
 				await this.saveFeedMapping(filePath, frontmatterId);
+				this.apiClient.clearServerCache().catch(() => {});
 				const label = mode === "draft" ? " [草稿]" : mode === "publish" ? " [已发布]" : "";
 				new Notice(`✅ 已更新文章 #${frontmatterId}${label}`);
 				return;
@@ -241,6 +242,7 @@ export default class RinPublisherPlugin extends Plugin {
 		if (mappedId !== null) {
 			try {
 				await this.apiClient.updateFeed(mappedId, updatePayload);
+				this.apiClient.clearServerCache().catch(() => {});
 				const label = mode === "draft" ? " [草稿]" : mode === "publish" ? " [已发布]" : "";
 				new Notice(`✅ 已更新文章 #${mappedId}${label}`);
 				return;
@@ -263,6 +265,7 @@ export default class RinPublisherPlugin extends Plugin {
 			if (existing) {
 				await this.saveFeedMapping(filePath, existing.id);
 				await this.apiClient.updateFeed(existing.id, updatePayload);
+				this.apiClient.clearServerCache().catch(() => {});
 				new Notice(`✅ 已更新文章 #${existing.id} (${alias})`);
 				return;
 			}
@@ -278,6 +281,7 @@ export default class RinPublisherPlugin extends Plugin {
 				if (titleMatch) {
 					await this.saveFeedMapping(filePath, titleMatch.id);
 					await this.apiClient.updateFeed(titleMatch.id, updatePayload);
+					this.apiClient.clearServerCache().catch(() => {});
 					const label = mode === "draft" ? " [草稿]" : mode === "publish" ? " [已发布]" : "";
 					new Notice(`✅ 已更新文章 #${titleMatch.id} (${payload.title})${label}`);
 					return;
@@ -289,6 +293,7 @@ export default class RinPublisherPlugin extends Plugin {
 
 		// ---- 阶段 3: 新建文章 ----
 		const insertedId = await this.createFeedWithRetry(filePath, payload, alias);
+		this.apiClient.clearServerCache().catch(() => {});
 		const label = mode === "publish" ? "发布" : mode === "draft" ? "存入草稿箱" : "新建";
 		new Notice(`✅ 已${label}，文章 ID: #${insertedId}${alias ? ` (${alias})` : ""}`);
 	}
@@ -321,6 +326,7 @@ export default class RinPublisherPlugin extends Plugin {
 				if (match) {
 					await this.saveFeedMapping(filePath, match.id);
 					await this.apiClient.updateFeed(match.id, payload);
+					this.apiClient.clearServerCache().catch(() => {});
 					new Notice(`♻️ 检测到重复，已更新现有文章 #${match.id}`);
 					return match.id;
 				}
